@@ -79,15 +79,27 @@
             const minutes = parseInt(document.getElementById('minutes-input').value) || 0;
             const seconds = parseInt(document.getElementById('seconds-input').value) || 0;
             
-            // Update global variables from inputs
-            bgMusicUrl = document.getElementById('bg-music-input').value.trim();
-            gameOverUrl = document.getElementById('game-over-input').value.trim();
-            startSoundUrl = document.getElementById('start-sound-input').value.trim();
+            // For audio, we read the current value of the state variables, 
+            // which are updated by either the text input listeners (if user types a URL) 
+            // or by the handleFileUpload function (if user uploads a file).
+            
+            // Check for manual URL changes in the input boxes and update state variables
+            // This allows the user to still paste a URL directly.
+            const newStartUrl = document.getElementById('start-sound-input').value.trim();
+            if (!newStartUrl.startsWith('data:')) { startSoundUrl = newStartUrl; }
+
+            const newBgUrl = document.getElementById('bg-music-input').value.trim();
+            if (!newBgUrl.startsWith('data:')) { bgMusicUrl = newBgUrl; }
+
+            const newGameOverUrl = document.getElementById('game-over-input').value.trim();
+            if (!newGameOverUrl.startsWith('data:')) { gameOverUrl = newGameOverUrl; }
+
             hintPenaltyMinutes = parseInt(document.getElementById('penalty-input').value) || 5;
             
             const settingsData = {
                 initialMinutes: minutes,
                 initialSeconds: seconds,
+                // Save the current state variables (Data URL or regular URL)
                 bgMusicUrl: bgMusicUrl,
                 gameOverUrl: gameOverUrl,
                 startSoundUrl: startSoundUrl,
@@ -116,15 +128,20 @@
                     document.getElementById('minutes-input').value = min;
                     document.getElementById('seconds-input').value = sec;
                     
-                    // Restore global URL variables
+                    // Restore global URL variables (these hold the actual audio source, either URL or Data URL)
                     bgMusicUrl = data.bgMusicUrl || '';
                     gameOverUrl = data.gameOverUrl || '';
                     startSoundUrl = data.startSoundUrl || '';
                     
-                    // Restore URL inputs
-                    document.getElementById('bg-music-input').value = bgMusicUrl;
-                    document.getElementById('game-over-input').value = gameOverUrl;
-                    document.getElementById('start-sound-input').value = startSoundUrl;
+                    // Restore URL inputs/display fields
+                    const getDisplayValue = (url) => {
+                        if (!url) return 'No File Selected / Paste URL';
+                        return url.startsWith('data:') ? 'File Loaded (Data URL)' : url;
+                    };
+
+                    document.getElementById('bg-music-input').value = getDisplayValue(bgMusicUrl);
+                    document.getElementById('game-over-input').value = getDisplayValue(gameOverUrl);
+                    document.getElementById('start-sound-input').value = getDisplayValue(startSoundUrl);
 
                     // Restore Hint settings
                     hintPenaltyMinutes = data.hintPenaltyMinutes || 5;
@@ -143,6 +160,50 @@
             }
             updateDisplay(); // Update UI after loading/defaults are set
         }
+
+        // --- FILE UPLOAD HANDLER (NEW) ---
+        function handleFileUpload(event, type, displayId) {
+            const file = event.target.files[0];
+            const displayInput = document.getElementById(displayId);
+            
+            if (!file) {
+                // If the user cancels the file dialog
+                displayInput.value = 'No File Selected / Paste URL';
+                return;
+            }
+
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const dataUrl = e.target.result;
+
+                if (type === 'start') {
+                    startSoundUrl = dataUrl;
+                } else if (type === 'bg') {
+                    bgMusicUrl = dataUrl;
+                } else if (type === 'gameOver') {
+                    gameOverUrl = dataUrl;
+                }
+                
+                // Update display input to show file name (and mark it as a Data URL source)
+                displayInput.value = `${file.name} (File Loaded)`;
+                saveSettings(); // Save settings with the new Data URL
+                console.log(`Audio file for ${type} loaded: ${file.name}`);
+            };
+
+            reader.onerror = function(e) {
+                console.error("Error reading file:", e);
+                // Clear state variable on error
+                if (type === 'start') startSoundUrl = '';
+                else if (type === 'bg') bgMusicUrl = '';
+                else if (type === 'gameOver') gameOverUrl = '';
+                displayInput.value = 'File Load Error';
+                saveSettings();
+            };
+
+            reader.readAsDataURL(file);
+        }
+        // --- END FILE UPLOAD HANDLER ---
 
         // --- AUDIO SETUP AND CONTROL ---
         function setupAudio() {
@@ -175,12 +236,13 @@
 
         function playStartSound() {
             if (startSoundUrl && startSoundUrl.trim() !== '') {
-                const startAudio = new Audio(startSoundUrl);
+                const audioSource = startSoundUrl.trim();
+                const startAudio = new Audio(audioSource);
                 startAudio.volume = 1.0;
                 // If this fails (like if it's not a direct audio link), log the error but don't stop execution
-                startAudio.play().catch(e => console.error("Could not play custom Start Sound (check link is direct audio file):", e));
+                startAudio.play().catch(e => console.error("Could not play custom Start Sound (check link or file is valid):", e));
             } else {
-                // FALLBACK: Use Tone.js for a synthetic start chime if no URL is provided.
+                // FALLBACK: Use Tone.js for a synthetic start chime if no source is provided.
                 console.log("No custom start sound provided. Using synthetic Tone.js chime.");
                 const now = Tone.now();
                 if (successChime) successChime.triggerAttackRelease(["C5", "E5"], "8n", now);
@@ -193,7 +255,7 @@
                 bgMusic = new Audio(bgMusicUrl);
                 bgMusic.loop = true;
                 bgMusic.volume = 0.6; // Keep it subtle
-                bgMusic.play().catch(e => console.error("Could not play BG Music (check link is direct audio file):", e));
+                bgMusic.play().catch(e => console.error("Could not play BG Music (check link or file is valid):", e));
             }
         }
 
@@ -216,7 +278,7 @@
                 // Play custom Game Over sound
                 gameOverAudio = new Audio(gameOverUrl);
                 gameOverAudio.volume = 1.0;
-                gameOverAudio.play().catch(e => console.error("Could not play Game Over Audio (check link is direct audio file):", e));
+                gameOverAudio.play().catch(e => console.error("Could not play Game Over Audio (check link or file is valid):", e));
             } else {
                 // Fallback: Use Tone.js for a boom/explosion sound if no custom URL
                 const boomNoise = new Tone.NoiseSynth({
@@ -590,3 +652,198 @@
         // --- INITIALIZATION ---
         window.onload = async function() {
             // 1. Setup Audio
+            setupAudio();
+            
+            // Setup input listeners for saving settings automatically
+            document.getElementById('minutes-input').addEventListener('input', () => setTime());
+            document.getElementById('seconds-input').addEventListener('input', () => setTime());
+            
+            // Listeners for manual URL paste (updates state variable implicitly via saveSettings)
+            document.getElementById('bg-music-input').addEventListener('input', saveSettings);
+            document.getElementById('game-over-input').addEventListener('input', saveSettings);
+            document.getElementById('start-sound-input').addEventListener('input', saveSettings);
+
+            document.getElementById('penalty-input').addEventListener('input', saveSettings);
+            
+            // 2. Load persistent settings from localStorage
+            loadSettings();
+            updateHintButtons(); // Initial setup of hint button text/state
+
+            // 3. Initial UI setup
+            document.getElementById('pause-btn').disabled = true;
+            document.getElementById('reset-btn').disabled = true;
+            // Make GM settings visible on load
+            document.getElementById('gm-settings-container').style.display = 'block';
+        };
+
+    </script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <!-- Game Over/Success Overlay -->
+    <div id="result-overlay" class="overlay hidden fixed inset-0 flex items-center justify-center transition-opacity duration-500 fade-in">
+        <div class="p-8 rounded-xl shadow-2xl text-center border-4 border-white/50 animate-bounce-in">
+            <h2 id="result-message" class="text-7xl md:text-9xl font-extrabold timer-font text-white"></h2>
+            <button onclick="resetTimer()" class="mt-8 px-6 py-3 bg-white text-gray-900 font-bold rounded-lg hover:bg-gray-200 transition duration-150 shadow-lg">
+                Start New Game
+            </button>
+        </div>
+    </div>
+    
+    <!-- Hint/Warning Message Overlay (Reused for 3-2-1 Countdown) -->
+    <div id="hint-message-overlay" class="hint-overlay hidden fixed">
+        <p id="hint-message-text" class="text-3xl font-bold timer-font tracking-wide"></p>
+    </div>
+
+
+    <!-- Main Timer Container -->
+    <div class="w-full max-w-4xl bg-gray-800 p-6 md:p-10 rounded-2xl shadow-2xl border border-gray-700/50">
+        
+        <h1 class="text-3xl font-bold text-center mb-6 text-red-500 tracking-wider uppercase">
+            ESCAPE ROOM: SOLVE THE MYSTERY
+        </h1>
+        
+        <!-- Timer Display -->
+        <div class="mb-4">
+            <div id="timer-display" 
+                class="timer-font text-8xl sm:text-9xl md:text-[10rem] font-extrabold text-orange-400 text-center p-4 bg-black/50 rounded-lg border-2 border-red-700 shadow-inner shadow-red-900 transition-colors duration-500">
+                60:00
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="h-4 w-full bg-gray-700 rounded-full mb-8 overflow-hidden border border-red-900">
+            <div id="progress-bar" 
+                 class="h-full rounded-full bg-green-500 transition-all duration-500" 
+                 style="width: 100%;">
+            </div>
+        </div>
+
+        <!-- GM Settings Panel (Hidden when Running) -->
+        <div id="gm-settings-container" style="display: none;" class="fade-in">
+
+            <h2 class="text-xl font-bold text-center mb-4 text-gray-300 border-b border-gray-700 pb-2">
+                Game Master Settings & Hidden Controls
+            </h2>
+
+            <!-- Time Setting Inputs -->
+            <div class="flex flex-col sm:flex-row justify-center items-center space-y-4 sm:space-y-0 sm:space-x-8 mb-6">
+                <div class="flex items-center space-x-2">
+                    <label for="minutes-input" class="text-xl font-medium text-gray-400">Start Minutes:</label>
+                    <input type="number" id="minutes-input" min="0" max="99" value="60" 
+                           class="w-24 p-3 text-2xl bg-gray-700 border-2 border-red-600 rounded-lg text-white timer-font text-center focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
+                </div>
+                <div class="flex items-center space-x-2">
+                    <label for="seconds-input" class="text-xl font-medium text-gray-400">Start Seconds:</label>
+                    <input type="number" id="seconds-input" min="0" max="59" value="0"
+                           class="w-24 p-3 text-2xl bg-gray-700 border-2 border-red-600 rounded-lg text-white timer-font text-center focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
+                </div>
+            </div>
+            
+            <!-- Hint Penalty and Control Panel -->
+            <div class="mb-8 p-4 bg-gray-700 rounded-xl border border-blue-600">
+                <h3 class="text-xl font-bold text-center mb-4 text-blue-300">
+                    Hint Penalty Configuration & Activation
+                </h3>
+
+                <div class="flex flex-col sm:flex-row items-center justify-center space-y-2 sm:space-y-0 sm:space-x-8 mb-6">
+                    <div class="flex items-center space-x-2">
+                        <label for="penalty-input" class="text-md font-medium text-gray-400 min-w-[150px]">Time Penalty (Minutes):</label>
+                        <input type="number" id="penalty-input" min="0" max="60" value="5"
+                               class="w-24 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
+                    </div>
+                </div>
+
+                <p class="text-center text-sm text-yellow-400 mb-4">
+                    *Press **Keys 1, 2, or 3** during the game to instantly apply the penalty. Press **Key 5** to trigger Win Game.
+                </p>
+
+                <div class="flex flex-wrap justify-center gap-4">
+                    <button id="hint-btn-1" onclick="activateHint(0)" 
+                            class="flex-1 min-w-[150px] max-w-[200px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-150">
+                        Hint 1 (Key 1) (-5 Min)
+                    </button>
+                    <button id="hint-btn-2" onclick="activateHint(1)" 
+                            class="flex-1 min-w-[150px] max-w-[200px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-150">
+                        Hint 2 (Key 2) (-5 Min)
+                    </button>
+                    <button id="hint-btn-3" onclick="activateHint(2)" 
+                            class="flex-1 min-w-[150px] max-w-[200px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-150">
+                        Hint 3 (Key 3) (-5 Min)
+                    </button>
+                </div>
+            </div>
+
+            <!-- Custom Audio Inputs -->
+            <div class="space-y-4 mb-8 p-4 bg-gray-700/50 rounded-lg border border-gray-600">
+                <h3 class="text-lg font-bold text-gray-300 mb-2">Custom Audio Files/URLs</h3>
+                <p class="text-sm text-yellow-300 font-medium">
+                    *Upload a local audio file or paste a direct URL below.
+                </p>
+                
+                <!-- Start Sound Input -->
+                <div class="space-y-1">
+                    <label for="start-sound-input" class="block text-md font-medium text-gray-400 mb-1">Start Sound (Plays Once):</label>
+                    <div class="flex space-x-2">
+                        <input type="file" id="start-file-input" accept="audio/*" class="hidden" 
+                               onchange="handleFileUpload(event, 'start', 'start-sound-input')" />
+                        <label for="start-file-input" class="cursor-pointer px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition whitespace-nowrap shadow-md">
+                            Upload File
+                        </label>
+                        <input type="text" id="start-sound-input" placeholder="Paste URL or use Upload File button"
+                               class="flex-1 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
+                    </div>
+                </div>
+
+                <!-- Background Music Input -->
+                <div class="space-y-1">
+                    <label for="bg-music-input" class="block text-md font-medium text-gray-400 mb-1">Background Music (Loops):</label>
+                    <div class="flex space-x-2">
+                        <input type="file" id="bg-file-input" accept="audio/*" class="hidden" 
+                               onchange="handleFileUpload(event, 'bg', 'bg-music-input')" />
+                        <label for="bg-file-input" class="cursor-pointer px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition whitespace-nowrap shadow-md">
+                            Upload File
+                        </label>
+                        <input type="text" id="bg-music-input" placeholder="Paste URL or use Upload File button"
+                               class="flex-1 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
+                    </div>
+                </div>
+
+                <!-- Game Over Input -->
+                <div class="space-y-1">
+                    <label for="game-over-input" class="block text-md font-medium text-gray-400 mb-1">Game Over Alarm (Plays Once):</label>
+                    <div class="flex space-x-2">
+                        <input type="file" id="game-over-file-input" accept="audio/*" class="hidden" 
+                               onchange="handleFileUpload(event, 'gameOver', 'game-over-input')" />
+                        <label for="game-over-file-input" class="cursor-pointer px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition whitespace-nowrap shadow-md">
+                            Upload File
+                        </label>
+                        <input type="text" id="game-over-input" placeholder="Paste URL or use Upload File button"
+                               class="flex-1 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+
+        <!-- Control Buttons (Player Facing) -->
+        <div class="flex flex-wrap justify-center gap-4">
+            <button id="start-btn" onclick="startTimer()" 
+                    class="flex-1 min-w-[120px] max-w-[200px] px-6 py-4 bg-red-600 hover:bg-red-700 text-white font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition duration-150 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
+                Start
+            </button>
+            <button id="pause-btn" onclick="pauseTimer()" disabled
+                    class="flex-1 min-w-[120px] max-w-[200px] px-6 py-4 bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition duration-150 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
+                Pause
+            </button>
+            <button id="reset-btn" onclick="resetTimer()" disabled
+                    class="flex-1 min-w-[120px] max-w-[200px] px-6 py-4 bg-gray-600 hover:bg-gray-700 text-white font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition duration-150 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
+                Reset
+            </button>
+        </div>
+
+    </div>
+
+</body>
+</html>
