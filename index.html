@@ -30,7 +30,7 @@
             from { opacity: 0; }
             to { opacity: 1; }
         }
-        /* Hint message specific style */
+        /* Hint/Countdown message specific style */
         .hint-overlay {
             z-index: 20;
             top: 50%;
@@ -41,12 +41,18 @@
             /* Use red glow for penalty notification */
             box-shadow: 0 0 30px rgba(255, 0, 0, 0.9); 
         }
+        /* Ensure the GM controls are hidden by default to prevent flashing */
+        #gm-settings-container {
+            display: none;
+        }
     </style>
     <script>
         // --- GLOBAL STATE ---
         let totalSeconds = 3600; 
         let initialTotalSeconds = 3600;
         let timerInterval = null;
+        let countdownInterval = null;
+        let countdownValue = 3;
         let isRunning = false;
         
         // --- HINT STATE (Penalties Only) ---
@@ -168,10 +174,16 @@
         }
 
         function playStartSound() {
-            if (startSoundUrl) {
+            if (startSoundUrl && startSoundUrl.trim() !== '') {
                 const startAudio = new Audio(startSoundUrl);
                 startAudio.volume = 1.0;
-                startAudio.play().catch(e => console.error("Could not play Start Sound (check link is direct audio file):", e));
+                // If this fails (like if it's not a direct audio link), log the error but don't stop execution
+                startAudio.play().catch(e => console.error("Could not play custom Start Sound (check link is direct audio file):", e));
+            } else {
+                // FALLBACK: Use Tone.js for a synthetic start chime if no URL is provided.
+                console.log("No custom start sound provided. Using synthetic Tone.js chime.");
+                const now = Tone.now();
+                if (successChime) successChime.triggerAttackRelease(["C5", "E5"], "8n", now);
             }
         }
 
@@ -288,17 +300,52 @@
             }
         }
         
-        function startTimer() {
+        // --- START/PAUSE/RESET LOGIC ---
+
+        function setTime(shouldSave = false) {
             if (isRunning) return;
             
-            setTime(true); // Save and set time
+            let minutes = parseInt(document.getElementById('minutes-input').value) || 0;
+            let seconds = parseInt(document.getElementById('seconds-input').value) || 0;
             
+            minutes = Math.max(0, Math.min(99, minutes));
+            seconds = Math.max(0, Math.min(59, seconds));
+            
+            totalSeconds = (minutes * 60) + seconds;
+            initialTotalSeconds = totalSeconds; 
+            
+            if (shouldSave) {
+                saveSettings(); // Save settings on start
+            }
+            
+            updateDisplay();
+        }
+
+        function showCountdownMessage(message, colorClass = 'bg-black/90') {
+            const hintOverlay = document.getElementById('hint-message-overlay');
+            const hintText = document.getElementById('hint-message-text');
+
+            // Use a much larger font size and a more urgent glow for the start countdown
+            hintText.className = 'text-9xl font-extrabold timer-font tracking-widest';
+            
+            // Clear previous classes and set new ones for overlay
+            hintOverlay.className = `overlay fixed hint-overlay p-8 rounded-2xl text-center fade-in z-20 ${colorClass} text-white`;
+            hintText.textContent = message;
+            hintOverlay.classList.remove('hidden');
+        }
+
+        function hideCountdownMessage() {
+            document.getElementById('hint-message-overlay').classList.add('hidden');
+            // Reset the text size back to the default penalty style for later use
+            document.getElementById('hint-message-text').className = 'text-3xl font-bold timer-font tracking-wide'; 
+        }
+
+        function finalizeStart() {
+            // This function runs after the 3-2-1 countdown is complete
             if (totalSeconds > 0) {
                 isRunning = true;
-                hintUsedStatus = [false, false, false]; // Reset hint usage on start
-                updateHintButtons(); // Update buttons to show unused state
-
-                // 1. Play custom START sound first
+                
+                // 1. Play custom START sound (or fallback)
                 playStartSound();
 
                 // 2. Play custom background music
@@ -309,12 +356,61 @@
                 document.getElementById('pause-btn').disabled = false;
                 document.getElementById('reset-btn').disabled = false;
                 
-                // GM Mode: Hide settings while running.
-                document.getElementById('gm-settings-container').classList.add('hidden');
-                
-                hideResult();
                 timerInterval = setInterval(tick, 1000);
             }
+        }
+
+        function initiateCountdown() {
+            if (isRunning) return;
+            // Stop any running timer/countdown just in case
+            if (timerInterval) clearInterval(timerInterval);
+            if (countdownInterval) clearInterval(countdownInterval);
+
+            setTime(true); // Save and set initial time
+            
+            if (totalSeconds <= 0) {
+                // If time is 0, just reset and don't start
+                resetTimer(); 
+                return;
+            }
+
+            // Preparation steps: Disable start button, hide GM settings, reset hint status
+            hintUsedStatus = [false, false, false]; 
+            updateHintButtons();
+            document.getElementById('gm-settings-container').style.display = 'none';
+            document.getElementById('start-btn').disabled = true;
+            hideResult();
+
+            // Start the 3-2-1 sequence
+            countdownValue = 3;
+            showCountdownMessage(countdownValue, 'bg-black/90 border-4 border-white');
+            
+            if (synth) synth.triggerAttackRelease("G3", "8n"); 
+
+            countdownInterval = setInterval(() => {
+                countdownValue--;
+                if (countdownValue > 0) {
+                    showCountdownMessage(countdownValue, 'bg-black/90 border-4 border-white');
+                    if (synth) synth.triggerAttackRelease("G3", "8n"); 
+                } else if (countdownValue === 0) {
+                    showCountdownMessage("GO!", 'bg-green-800/90 border-4 border-green-400');
+                    if (synth) successChime.triggerAttackRelease(["C4"], "4n"); // Use success chime for GO
+                    
+                    clearInterval(countdownInterval);
+                    countdownInterval = null;
+                    
+                    // Finalize the start after a 1-second display of "GO!"
+                    setTimeout(() => {
+                        hideCountdownMessage();
+                        finalizeStart();
+                    }, 1000);
+                }
+            }, 1000);
+        }
+
+        function startTimer() {
+            if (isRunning) return;
+            initiateCountdown();
         }
         
         function pauseTimer() {
@@ -331,7 +427,7 @@
             document.getElementById('pause-btn').disabled = true;
 
             // GM Mode: Show settings while paused (Hint buttons are in here)
-            document.getElementById('gm-settings-container').classList.remove('hidden');
+            document.getElementById('gm-settings-container').style.display = 'block';
 
             updateDisplay();
         }
@@ -354,37 +450,19 @@
             document.getElementById('reset-btn').disabled = true;
             
             // GM Mode: Show settings on reset
-            document.getElementById('gm-settings-container').classList.remove('hidden');
+            document.getElementById('gm-settings-container').style.display = 'block';
 
             updateDisplay();
             hideResult();
         }
 
-        function setTime(shouldSave = false) {
-            if (isRunning) return;
-            
-            let minutes = parseInt(document.getElementById('minutes-input').value) || 0;
-            let seconds = parseInt(document.getElementById('seconds-input').value) || 0;
-            
-            minutes = Math.max(0, Math.min(99, minutes));
-            seconds = Math.max(0, Math.min(59, seconds));
-            
-            totalSeconds = (minutes * 60) + seconds;
-            initialTotalSeconds = totalSeconds; 
-            
-            if (shouldSave) {
-                saveSettings(); // Save settings on start
-            }
-            
-            updateDisplay();
-        }
         
         // --- HINT ACTIVATION LOGIC ---
 
         function activateHint(hintIndex) {
             if (!isRunning) {
                 console.warn("Timer not running. Cannot activate hint.");
-                showHintMessage("Timer must be running to activate hints.", 3000, 'bg-gray-700/90');
+                showPenaltyMessage("Timer must be running to activate hints.", 3000, 'bg-gray-700/90');
                 return;
             }
             
@@ -392,7 +470,7 @@
 
             // Check if already used
             if (hintUsedStatus[hintIndex]) {
-                showHintMessage(`Hint ${hintIndex + 1} already used in this game.`, 3000, 'bg-gray-700/90');
+                showPenaltyMessage(`Hint ${hintIndex + 1} already used in this game.`, 3000, 'bg-gray-700/90');
                 return;
             }
 
@@ -409,7 +487,7 @@
             // 3. Show Message
             const penaltyText = hintPenaltyMinutes > 0 ? `${hintPenaltyMinutes} minutes penalty` : 'no time penalty';
             const fullMessage = `Hint ${hintIndex + 1} used, ${penaltyText} applied!`;
-            showHintMessage(fullMessage, 7000, 'bg-red-800/90');
+            showPenaltyMessage(fullMessage, 7000, 'bg-red-800/90');
         }
 
         function updateHintButtons() {
@@ -435,9 +513,12 @@
             }
         }
         
-        function showHintMessage(message, duration, colorClass) {
+        function showPenaltyMessage(message, duration, colorClass) {
             const hintOverlay = document.getElementById('hint-message-overlay');
             const hintText = document.getElementById('hint-message-text');
+
+            // Set the text size correct for a penalty message
+            hintText.className = 'text-3xl font-bold timer-font tracking-wide'; 
             
             // Clear previous classes and set new ones
             hintOverlay.className = `overlay fixed hint-overlay p-6 rounded-xl text-center fade-in z-20 ${colorClass} text-white`;
@@ -509,170 +590,3 @@
         // --- INITIALIZATION ---
         window.onload = async function() {
             // 1. Setup Audio
-            setupAudio();
-            
-            // Setup input listeners for saving settings automatically
-            document.getElementById('minutes-input').addEventListener('input', () => setTime());
-            document.getElementById('seconds-input').addEventListener('input', () => setTime());
-            document.getElementById('bg-music-input').addEventListener('input', saveSettings);
-            document.getElementById('game-over-input').addEventListener('input', saveSettings);
-            document.getElementById('start-sound-input').addEventListener('input', saveSettings);
-            document.getElementById('penalty-input').addEventListener('input', saveSettings);
-            
-            // 2. Load persistent settings from localStorage
-            loadSettings();
-            updateHintButtons(); // Initial setup of hint button text/state
-
-            // 3. Initial UI setup
-            document.getElementById('pause-btn').disabled = true;
-            document.getElementById('reset-btn').disabled = true;
-        };
-
-    </script>
-</head>
-<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center p-4">
-
-    <!-- Game Over/Success Overlay -->
-    <div id="result-overlay" class="overlay hidden fixed inset-0 flex items-center justify-center transition-opacity duration-500 fade-in">
-        <div class="p-8 rounded-xl shadow-2xl text-center border-4 border-white/50 animate-bounce-in">
-            <h2 id="result-message" class="text-7xl md:text-9xl font-extrabold timer-font text-white"></h2>
-            <button onclick="resetTimer()" class="mt-8 px-6 py-3 bg-white text-gray-900 font-bold rounded-lg hover:bg-gray-200 transition duration-150 shadow-lg">
-                Start New Game
-            </button>
-        </div>
-    </div>
-    
-    <!-- Hint/Warning Message Overlay -->
-    <div id="hint-message-overlay" class="hint-overlay hidden fixed">
-        <p id="hint-message-text" class="text-3xl font-bold timer-font tracking-wide"></p>
-    </div>
-
-
-    <!-- Main Timer Container -->
-    <div class="w-full max-w-4xl bg-gray-800 p-6 md:p-10 rounded-2xl shadow-2xl border border-gray-700/50">
-        
-        <h1 class="text-3xl font-bold text-center mb-6 text-red-500 tracking-wider uppercase">
-            ESCAPE ROOM: SOLVE THE MYSTERY
-        </h1>
-        
-        <!-- Timer Display -->
-        <div class="mb-4">
-            <div id="timer-display" 
-                class="timer-font text-8xl sm:text-9xl md:text-[10rem] font-extrabold text-orange-400 text-center p-4 bg-black/50 rounded-lg border-2 border-red-700 shadow-inner shadow-red-900 transition-colors duration-500">
-                60:00
-            </div>
-        </div>
-
-        <!-- Progress Bar -->
-        <div class="h-4 w-full bg-gray-700 rounded-full mb-8 overflow-hidden border border-red-900">
-            <div id="progress-bar" 
-                 class="h-full rounded-full bg-green-500 transition-all duration-500" 
-                 style="width: 100%;">
-            </div>
-        </div>
-
-        <!-- GM Settings Panel (Hidden when Running) -->
-        <div id="gm-settings-container" class="fade-in">
-
-            <h2 class="text-xl font-bold text-center mb-4 text-gray-300 border-b border-gray-700 pb-2">
-                Game Master Settings & Hidden Controls
-            </h2>
-
-            <!-- Time Setting Inputs -->
-            <div class="flex flex-col sm:flex-row justify-center items-center space-y-4 sm:space-y-0 sm:space-x-8 mb-6">
-                <div class="flex items-center space-x-2">
-                    <label for="minutes-input" class="text-xl font-medium text-gray-400">Start Minutes:</label>
-                    <input type="number" id="minutes-input" min="0" max="99" value="60" 
-                           class="w-24 p-3 text-2xl bg-gray-700 border-2 border-red-600 rounded-lg text-white timer-font text-center focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
-                </div>
-                <div class="flex items-center space-x-2">
-                    <label for="seconds-input" class="text-xl font-medium text-gray-400">Start Seconds:</label>
-                    <input type="number" id="seconds-input" min="0" max="59" value="0"
-                           class="w-24 p-3 text-2xl bg-gray-700 border-2 border-red-600 rounded-lg text-white timer-font text-center focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
-                </div>
-            </div>
-            
-            <!-- Hint Penalty and Control Panel -->
-            <div class="mb-8 p-4 bg-gray-700 rounded-xl border border-blue-600">
-                <h3 class="text-xl font-bold text-center mb-4 text-blue-300">
-                    Hint Penalty Configuration & Activation
-                </h3>
-
-                <div class="flex flex-col sm:flex-row items-center justify-center space-y-2 sm:space-y-0 sm:space-x-8 mb-6">
-                    <div class="flex items-center space-x-2">
-                        <label for="penalty-input" class="text-md font-medium text-gray-400 min-w-[150px]">Time Penalty (Minutes):</label>
-                        <input type="number" id="penalty-input" min="0" max="60" value="5"
-                               class="w-24 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
-                    </div>
-                </div>
-
-                <p class="text-center text-sm text-yellow-400 mb-4">
-                    *Press **Keys 1, 2, or 3** during the game to instantly apply the penalty. Press **Key 5** to trigger Win Game.
-                </p>
-
-                <div class="flex flex-wrap justify-center gap-4">
-                    <button id="hint-btn-1" onclick="activateHint(0)" 
-                            class="flex-1 min-w-[150px] max-w-[200px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-150">
-                        Hint 1 (Key 1) (-5 Min)
-                    </button>
-                    <button id="hint-btn-2" onclick="activateHint(1)" 
-                            class="flex-1 min-w-[150px] max-w-[200px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-150">
-                        Hint 2 (Key 2) (-5 Min)
-                    </button>
-                    <button id="hint-btn-3" onclick="activateHint(2)" 
-                            class="flex-1 min-w-[150px] max-w-[200px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-150">
-                        Hint 3 (Key 3) (-5 Min)
-                    </button>
-                </div>
-            </div>
-
-            <!-- Custom Audio Inputs -->
-            <div class="space-y-4 mb-8 p-4 bg-gray-700/50 rounded-lg border border-gray-600">
-                <h3 class="text-lg font-bold text-gray-300 mb-2">Custom Audio URLs</h3>
-                <p class="text-sm text-yellow-300 font-medium">
-                    *Note: URLs must be direct links to audio files (.mp3, .wav, etc.).
-                </p>
-                
-                <div>
-                    <label for="start-sound-input" class="block text-md font-medium text-gray-400 mb-1">Start Sound URL (Plays Once):</label>
-                    <input type="url" id="start-sound-input" placeholder="e.g., https://example.com/start_chime.wav"
-                           class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
-                </div>
-
-                <div>
-                    <label for="bg-music-input" class="block text-md font-medium text-gray-400 mb-1">Background Music URL (Loops):</label>
-                    <input type="url" id="bg-music-input" placeholder="e.g., https://example.com/music.mp3"
-                           class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
-                </div>
-
-                <div>
-                    <label for="game-over-input" class="block text-md font-medium text-gray-400 mb-1">Game Over Alarm URL (Plays Once):</label>
-                    <input type="url" id="game-over-input" placeholder="e.g., https://example.com/alarm.wav"
-                           class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
-                </div>
-            </div>
-
-        </div>
-
-
-        <!-- Control Buttons (Player Facing) -->
-        <div class="flex flex-wrap justify-center gap-4">
-            <button id="start-btn" onclick="startTimer()" 
-                    class="flex-1 min-w-[120px] max-w-[200px] px-6 py-4 bg-red-600 hover:bg-red-700 text-white font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition duration-150 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
-                Start
-            </button>
-            <button id="pause-btn" onclick="pauseTimer()" disabled
-                    class="flex-1 min-w-[120px] max-w-[200px] px-6 py-4 bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition duration-150 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
-                Pause
-            </button>
-            <button id="reset-btn" onclick="resetTimer()" disabled
-                    class="flex-1 min-w-[120px] max-w-[200px] px-6 py-4 bg-gray-600 hover:bg-gray-700 text-white font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition duration-150 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
-                Reset
-            </button>
-            <!-- Win Game is triggered via Key 5 -->
-        </div>
-
-    </div>
-
-</body>
-</html>
