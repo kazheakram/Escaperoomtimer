@@ -35,7 +35,7 @@
             z-index: 20;
             top: 50%;
             left: 50%;
-            transform: translate(-50%, -50%);
+            transform: translate(-55%, -50%);
             width: 90%;
             max-width: 600px;
             /* Use red glow for penalty notification */
@@ -44,6 +44,11 @@
         /* Ensure the GM controls are hidden by default to prevent flashing */
         #gm-settings-container {
             display: none;
+        }
+        /* Style for error inputs */
+        .input-error-border {
+            border-color: #f87171 !important; /* Tailwind red-400 */
+            box-shadow: 0 0 5px #f87171;
         }
     </style>
     <script>
@@ -65,13 +70,49 @@
         let bgMusic = null; // Native Audio for custom background track
         let gameOverAudio = null; // Native Audio for custom game over alarm
         
-        // Default URLs (placeholders)
+        // Default URLs: Empty string means no custom audio is currently active.
         let bgMusicUrl = ''; 
         let gameOverUrl = ''; 
         let startSoundUrl = '';
         
         const LOCAL_STORAGE_KEY = 'escapeRoomTimerSettings';
+
+        // --- HELPER FUNCTIONS ---
+        function isLocalFilePath(url) {
+            return url && url.startsWith('file:///');
+        }
+
+        function getDisplayValue(url) {
+            if (!url || url.trim() === '') return 'No File Selected / Paste URL';
+            if (url.startsWith('data:')) return 'File Loaded (Data URL)';
+            if (isLocalFilePath(url)) return '🚫 ERROR: Local File Path Not Allowed';
+            return url;
+        }
         
+        function applyInputError(inputId, isError) {
+            const input = document.getElementById(inputId);
+            const warningId = `${inputId}-warning`;
+            let warning = document.getElementById(warningId);
+
+            if (isError) {
+                input.classList.add('input-error-border');
+                if (!warning) {
+                    warning = document.createElement('p');
+                    warning.id = warningId;
+                    warning.className = 'text-xs text-red-400 mt-1';
+                    input.parentElement.appendChild(warning);
+                }
+                warning.textContent = 'This local file path is blocked by the browser. Please use "Upload File" or a public link.';
+            } else {
+                input.classList.remove('input-error-border');
+                if (warning) {
+                    warning.remove();
+                }
+            }
+        }
+        // --- END HELPER FUNCTIONS ---
+
+
         // --- LOCAL STORAGE FUNCTIONS ---
 
         function saveSettings() {
@@ -79,30 +120,42 @@
             const minutes = parseInt(document.getElementById('minutes-input').value) || 0;
             const seconds = parseInt(document.getElementById('seconds-input').value) || 0;
             
-            // For audio, we read the current value of the state variables, 
-            // which are updated by either the text input listeners (if user types a URL) 
-            // or by the handleFileUpload function (if user uploads a file).
+            // Handle URL inputs: 
+            // 1. Update state variables for manual URL input.
+            // 2. Data URLs (from uploads) are set in handleFileUpload and are NOT saved to localStorage.
             
-            // Check for manual URL changes in the input boxes and update state variables
-            // This allows the user to still paste a URL directly.
+            // If the user types over 'File Loaded (Data URL)', we assume they are pasting a public URL.
             const newStartUrl = document.getElementById('start-sound-input').value.trim();
-            if (!newStartUrl.startsWith('data:')) { startSoundUrl = newStartUrl; }
-
+            if (!newStartUrl.startsWith('File Loaded')) {
+                startSoundUrl = newStartUrl; 
+            }
+            
             const newBgUrl = document.getElementById('bg-music-input').value.trim();
-            if (!newBgUrl.startsWith('data:')) { bgMusicUrl = newBgUrl; }
+            if (!newBgUrl.startsWith('File Loaded')) {
+                bgMusicUrl = newBgUrl; 
+            }
 
             const newGameOverUrl = document.getElementById('game-over-input').value.trim();
-            if (!newGameOverUrl.startsWith('data:')) { gameOverUrl = newGameOverUrl; }
+            if (!newGameOverUrl.startsWith('File Loaded')) {
+                gameOverUrl = newGameOverUrl; 
+            }
+
+            // After updating state variables, check and apply visual errors
+            applyInputError('start-sound-input', isLocalFilePath(startSoundUrl));
+            applyInputError('bg-music-input', isLocalFilePath(bgMusicUrl));
+            applyInputError('game-over-input', isLocalFilePath(gameOverUrl));
+
 
             hintPenaltyMinutes = parseInt(document.getElementById('penalty-input').value) || 5;
             
+            // IMPORTANT FIX: To avoid QuotaExceededError, DO NOT save large data URLs.
+            // Only save the URL string if it's NOT a data URL (i.e., it's a public HTTP/HTTPS link or an empty string).
             const settingsData = {
                 initialMinutes: minutes,
                 initialSeconds: seconds,
-                // Save the current state variables (Data URL or regular URL)
-                bgMusicUrl: bgMusicUrl,
-                gameOverUrl: gameOverUrl,
-                startSoundUrl: startSoundUrl,
+                bgMusicUrl: bgMusicUrl.startsWith('data:') ? '' : bgMusicUrl, 
+                gameOverUrl: gameOverUrl.startsWith('data:') ? '' : gameOverUrl, 
+                startSoundUrl: startSoundUrl.startsWith('data:') ? '' : startSoundUrl, 
                 hintPenaltyMinutes: hintPenaltyMinutes,
             };
 
@@ -111,7 +164,12 @@
                 console.log("Settings saved to localStorage.");
                 updateHintButtons(); // Update button labels if penalty changes
             } catch (e) {
+                // Console error retained to track storage usage
                 console.error("Error saving to localStorage:", e);
+                // If it's a quota error, warn the user about saving the state.
+                if (e.name === 'QuotaExceededError') {
+                     showPenaltyMessage("Error: Browser storage limit reached. Time settings saved, but audio files must be re-uploaded on refresh.", 8000, 'bg-red-700/90');
+                }
             }
         }
         
@@ -128,20 +186,20 @@
                     document.getElementById('minutes-input').value = min;
                     document.getElementById('seconds-input').value = sec;
                     
-                    // Restore global URL variables (these hold the actual audio source, either URL or Data URL)
+                    // Restore global URL variables. Default to empty string if no public URL was saved.
                     bgMusicUrl = data.bgMusicUrl || '';
                     gameOverUrl = data.gameOverUrl || '';
                     startSoundUrl = data.startSoundUrl || '';
                     
-                    // Restore URL inputs/display fields
-                    const getDisplayValue = (url) => {
-                        if (!url) return 'No File Selected / Paste URL';
-                        return url.startsWith('data:') ? 'File Loaded (Data URL)' : url;
-                    };
-
+                    // Restore URL inputs/display fields with updated display function
                     document.getElementById('bg-music-input').value = getDisplayValue(bgMusicUrl);
                     document.getElementById('game-over-input').value = getDisplayValue(gameOverUrl);
                     document.getElementById('start-sound-input').value = getDisplayValue(startSoundUrl);
+
+                    // Apply visual errors if any loaded URL is a local path
+                    applyInputError('start-sound-input', isLocalFilePath(startSoundUrl));
+                    applyInputError('bg-music-input', isLocalFilePath(bgMusicUrl));
+                    applyInputError('game-over-input', isLocalFilePath(gameOverUrl));
 
                     // Restore Hint settings
                     hintPenaltyMinutes = data.hintPenaltyMinutes || 5;
@@ -154,6 +212,7 @@
                     console.log("Settings loaded from localStorage.");
                 } else {
                     console.log("No saved settings found. Using defaults.");
+                    // Since default audio URLs are now empty strings, no need to apply visual errors here.
                 }
             } catch (error) {
                 console.error("Error loading settings from localStorage:", error);
@@ -161,14 +220,14 @@
             updateDisplay(); // Update UI after loading/defaults are set
         }
 
-        // --- FILE UPLOAD HANDLER (NEW) ---
+        // --- FILE UPLOAD HANDLER ---
         function handleFileUpload(event, type, displayId) {
             const file = event.target.files[0];
             const displayInput = document.getElementById(displayId);
             
             if (!file) {
                 // If the user cancels the file dialog
-                displayInput.value = 'No File Selected / Paste URL';
+                displayInput.value = getDisplayValue(null);
                 return;
             }
 
@@ -177,6 +236,7 @@
             reader.onload = function(e) {
                 const dataUrl = e.target.result;
 
+                // Set the global state variable to the Data URL (this is only for the current session)
                 if (type === 'start') {
                     startSoundUrl = dataUrl;
                 } else if (type === 'bg') {
@@ -185,19 +245,21 @@
                     gameOverUrl = dataUrl;
                 }
                 
-                // Update display input to show file name (and mark it as a Data URL source)
-                displayInput.value = `${file.name} (File Loaded)`;
-                saveSettings(); // Save settings with the new Data URL
-                console.log(`Audio file for ${type} loaded: ${file.name}`);
+                // Update display input to show file loaded state and remove any previous error
+                displayInput.value = `File Loaded (Data URL)`;
+                applyInputError(displayId, false); // Remove error border
+                saveSettings(); // Save other settings (time, penalty) and mark URL as empty in storage
+                console.log(`Audio file for ${type} loaded: ${file.name} (temporary, not saved in local storage)`);
             };
 
             reader.onerror = function(e) {
                 console.error("Error reading file:", e);
-                // Clear state variable on error
+                // Clear state variable on error, revert to default error state (empty string)
                 if (type === 'start') startSoundUrl = '';
                 else if (type === 'bg') bgMusicUrl = '';
                 else if (type === 'gameOver') gameOverUrl = '';
                 displayInput.value = 'File Load Error';
+                applyInputError(displayId, true); // Add error border for read failure
                 saveSettings();
             };
 
@@ -235,6 +297,10 @@
         }
 
         function playStartSound() {
+            if (isLocalFilePath(startSoundUrl)) {
+                 console.warn("Cannot play Start Sound: Local file path is blocked.");
+                 return;
+            }
             if (startSoundUrl && startSoundUrl.trim() !== '') {
                 const audioSource = startSoundUrl.trim();
                 const startAudio = new Audio(audioSource);
@@ -251,6 +317,10 @@
 
         function playBgMusic() {
             stopBgMusic(); // Ensure any existing music is stopped
+            if (isLocalFilePath(bgMusicUrl)) {
+                 console.warn("Cannot play Background Music: Local file path is blocked.");
+                 return;
+            }
             if (bgMusicUrl) {
                 bgMusic = new Audio(bgMusicUrl);
                 bgMusic.loop = true;
@@ -274,13 +344,16 @@
                 // Play Tone.js success chime
                 const now = Tone.now();
                 if (successChime) successChime.triggerAttackRelease(["C4", "E4", "G4", "C5"], "1n", now);
-            } else if (gameOverUrl) {
+            } else if (gameOverUrl && !isLocalFilePath(gameOverUrl)) {
                 // Play custom Game Over sound
                 gameOverAudio = new Audio(gameOverUrl);
                 gameOverAudio.volume = 1.0;
                 gameOverAudio.play().catch(e => console.error("Could not play Game Over Audio (check link or file is valid):", e));
             } else {
-                // Fallback: Use Tone.js for a boom/explosion sound if no custom URL
+                // Fallback: Use Tone.js for a boom/explosion sound if no custom URL or if it's blocked
+                if (isLocalFilePath(gameOverUrl)) {
+                    console.warn("Cannot play Game Over Audio: Local file path is blocked. Using fallback.");
+                }
                 const boomNoise = new Tone.NoiseSynth({
                     noise: { type: 'pink' },
                     envelope: { attack: 0.005, decay: 1.5, sustain: 0, release: 0.1 }
@@ -595,7 +668,8 @@
         // --- RESULT AND WIN/LOSS LOGIC ---
 
         function showResult(success) {
-            stopBgMusic(); 
+            pauseTimer(); // Stop the timer and music
+
             playGameOverAudio(success); 
 
             const resultOverlay = document.getElementById('result-overlay');
@@ -779,6 +853,9 @@
                 <h3 class="text-lg font-bold text-gray-300 mb-2">Custom Audio Files/URLs</h3>
                 <p class="text-sm text-yellow-300 font-medium">
                     *Upload a local audio file or paste a direct URL below.
+                    <span class="text-red-300 font-bold block mt-1">
+                        Warning: Uploaded files are large and will NOT persist across sessions due to browser storage limits.
+                    </span>
                 </p>
                 
                 <!-- Start Sound Input -->
@@ -790,7 +867,7 @@
                         <label for="start-file-input" class="cursor-pointer px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition whitespace-nowrap shadow-md">
                             Upload File
                         </label>
-                        <input type="text" id="start-sound-input" placeholder="Paste URL or use Upload File button"
+                        <input type="text" id="start-sound-input" placeholder="Paste PUBLIC URL or use Upload File"
                                class="flex-1 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
                     </div>
                 </div>
@@ -804,7 +881,7 @@
                         <label for="bg-file-input" class="cursor-pointer px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition whitespace-nowrap shadow-md">
                             Upload File
                         </label>
-                        <input type="text" id="bg-music-input" placeholder="Paste URL or use Upload File button"
+                        <input type="text" id="bg-music-input" placeholder="Paste PUBLIC URL or use Upload File"
                                class="flex-1 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
                     </div>
                 </div>
@@ -818,7 +895,7 @@
                         <label for="game-over-file-input" class="cursor-pointer px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition whitespace-nowrap shadow-md">
                             Upload File
                         </label>
-                        <input type="text" id="game-over-input" placeholder="Paste URL or use Upload File button"
+                        <input type="text" id="game-over-input" placeholder="Paste PUBLIC URL or use Upload File"
                                class="flex-1 p-2 bg-gray-600 border border-gray-500 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-400 transition" />
                     </div>
                 </div>
